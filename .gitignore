@@ -1,0 +1,8 @@
+# Ignore everything
+*
+
+# But don't ignore this file itself
+!.gitignore
+
+# Don't ignore the snake game file
+!snake_game.py
