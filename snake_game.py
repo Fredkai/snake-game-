@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Terminal Snake Game
-A classic Snake game that runs in the terminal using keyboard controls.
-Use WASD or arrow keys to control the snake.
+Enhanced Terminal Snake Game with AI Player
+A polished Snake game with improved consistency, smoother controls, AI player with A* pathfinding, and better features.
+Use WASD or arrow keys to control the snake, or watch the AI play.
 """
 
 import random
@@ -10,99 +10,179 @@ import time
 import sys
 import os
 import heapq
+import threading
 from collections import deque
+from enum import Enum
 
-# For Windows console input
+# For cross-platform input handling
 try:
     import msvcrt
 except ImportError:
-    # For Unix-like systems
     import termios
     import tty
+    import select
+
+class Direction(Enum):
+    UP = (0, -1)
+    DOWN = (0, 1)
+    LEFT = (-1, 0)
+    RIGHT = (1, 0)
+
+class GameState(Enum):
+    PLAYING = "playing"
+    PAUSED = "paused"
+    GAME_OVER = "game_over"
+    QUIT = "quit"
 
 class SnakeGame:
-    def __init__(self, width=40, height=20):
+    def __init__(self, width=30, height=20):
         self.width = width
         self.height = height
-        self.snake = [(self.width // 2, self.height // 2)]
-        self.direction = (1, 0)  # Start moving right
+        self.reset_game()
+        
+    def reset_game(self):
+        """Reset game to initial state"""
+        center_x, center_y = self.width // 2, self.height // 2
+        self.snake = deque([(center_x, center_y), (center_x - 1, center_y)])
+        self.direction = Direction.RIGHT
+        self.next_direction = Direction.RIGHT
         self.food = self.generate_food()
         self.score = 0
-        self.game_over = False
+        self.state = GameState.PLAYING
+        self.moves_without_food = 0
+        self.max_moves_without_food = self.width * self.height
         
     def generate_food(self):
         """Generate food at a random position not occupied by the snake"""
-        while True:
-            food = (random.randint(0, self.width - 1), random.randint(0, self.height - 1))
-            if food not in self.snake:
-                return food
-    
-    def move_snake(self):
-        """Move the snake in the current direction"""
-        head = self.snake[0]
-        new_head = (head[0] + self.direction[0], head[1] + self.direction[1])
+        empty_positions = []
+        for x in range(self.width):
+            for y in range(self.height):
+                if (x, y) not in self.snake:
+                    empty_positions.append((x, y))
         
-        # Check for wall collision
+        if not empty_positions:
+            # Game won (snake fills entire board)
+            self.state = GameState.GAME_OVER
+            return None
+            
+        return random.choice(empty_positions)
+    
+    def is_valid_direction_change(self, new_direction):
+        """Check if direction change is valid (not opposite to current direction)"""
+        current = self.direction.value
+        new = new_direction.value
+        # Prevent moving in opposite direction
+        return (current[0] + new[0], current[1] + new[1]) != (0, 0)
+    
+    def change_direction(self, new_direction):
+        """Queue next direction change"""
+        if self.is_valid_direction_change(new_direction):
+            self.next_direction = new_direction
+    
+    def update(self):
+        """Update game state"""
+        if self.state != GameState.PLAYING:
+            return
+            
+        # Apply queued direction change
+        if self.is_valid_direction_change(self.next_direction):
+            self.direction = self.next_direction
+        
+        # Calculate new head position
+        head = self.snake[0]
+        dx, dy = self.direction.value
+        new_head = (head[0] + dx, head[1] + dy)
+        
+        # Check wall collision
         if (new_head[0] < 0 or new_head[0] >= self.width or 
             new_head[1] < 0 or new_head[1] >= self.height):
-            self.game_over = True
+            self.state = GameState.GAME_OVER
             return
         
-        # Check for self collision
+        # Check self collision
         if new_head in self.snake:
-            self.game_over = True
+            self.state = GameState.GAME_OVER
             return
         
-        self.snake.insert(0, new_head)
+        # Add new head
+        self.snake.appendleft(new_head)
         
-        # Check if food is eaten
+        # Check food consumption
         if new_head == self.food:
             self.score += 1
+            self.moves_without_food = 0
             self.food = self.generate_food()
+            if self.food is None:  # Board is full
+                return
         else:
             # Remove tail if no food eaten
             self.snake.pop()
+            self.moves_without_food += 1
+            
+            # Prevent infinite games
+            if self.moves_without_food > self.max_moves_without_food:
+                self.state = GameState.GAME_OVER
     
-    def change_direction(self, new_direction):
-        """Change snake direction, preventing reverse movement"""
-        # Prevent moving in opposite direction
-        if (new_direction[0] * -1, new_direction[1] * -1) != self.direction:
-            self.direction = new_direction
+    def get_speed(self):
+        """Get game speed based on score (gets faster as score increases)"""
+        base_speed = 0.2
+        speed_increase = min(0.15, self.score * 0.01)
+        return max(0.05, base_speed - speed_increase)
     
-    def draw_game(self):
-        """Draw the game board"""
+    def draw(self):
+        """Render the game"""
         # Clear screen
         os.system('cls' if os.name == 'nt' else 'clear')
         
-        # Create game board
+        # Create board
         board = [[' ' for _ in range(self.width)] for _ in range(self.height)]
         
         # Place snake
         for i, (x, y) in enumerate(self.snake):
             if i == 0:
-                board[y][x] = '●'  # Head
+                # Snake head with direction indicator
+                head_chars = {
+                    Direction.UP: '▲',
+                    Direction.DOWN: '▼',
+                    Direction.LEFT: '◄',
+                    Direction.RIGHT: '►'
+                }
+                board[y][x] = head_chars[self.direction]
             else:
-                board[y][x] = '○'  # Body
+                board[y][x] = '█'
         
         # Place food
-        board[self.food[1]][self.food[0]] = '★'
+        if self.food:
+            board[self.food[1]][self.food[0]] = '●'
+        
+        # Print game title
+        print("🐍 SNAKE GAME 🐍")
+        print()
         
         # Print top border
-        print('┌' + '─' * self.width + '┐')
+        print('╔' + '═' * self.width + '╗')
         
         # Print game board
         for row in board:
-            print('│' + ''.join(row) + '│')
+            print('║' + ''.join(row) + '║')
         
         # Print bottom border
-        print('└' + '─' * self.width + '┘')
+        print('╚' + '═' * self.width + '╝')
         
-        # Print score and controls
-        print(f'Score: {self.score}')
+        # Game info
+        print(f'Score: {self.score}   Length: {len(self.snake)}   Speed: {1/self.get_speed():.1f}')
         
-        if self.game_over:
-            print('\n🎮 GAME OVER! 🎮')
-            print('Press any key to exit...')
+        # Controls and status
+        if self.state == GameState.PLAYING:
+            print('Controls: WASD/Arrow Keys = Move, P = Pause, Q = Quit')
+        elif self.state == GameState.PAUSED:
+            print('⏸️  PAUSED - Press P to resume, Q to quit')
+        elif self.state == GameState.GAME_OVER:
+            if len(self.snake) == self.width * self.height:
+                print('🎉 CONGRATULATIONS! YOU WON! 🎉')
+            else:
+                print('💀 GAME OVER 💀')
+            print('Press R to restart, Q to quit')
 
 class AIPlayer:
     """AI player that uses A* pathfinding to play Snake automatically"""
@@ -211,48 +291,59 @@ class AIPlayer:
             return self.get_safe_direction()
 
 class InputHandler:
-    """Handle keyboard input for different operating systems"""
+    """Cross-platform keyboard input handler"""
     
     def __init__(self):
         self.is_windows = os.name == 'nt'
+        self.key_queue = deque()
+        
         if not self.is_windows:
             self.old_settings = termios.tcgetattr(sys.stdin)
             tty.cbreak(sys.stdin.fileno())
     
+    def get_key_windows(self):
+        """Get key on Windows"""
+        if msvcrt.kbhit():
+            key = msvcrt.getch()
+            if key == b'\xe0':  # Arrow key prefix
+                key = msvcrt.getch()
+                arrow_keys = {
+                    b'H': 'UP',
+                    b'P': 'DOWN', 
+                    b'K': 'LEFT',
+                    b'M': 'RIGHT'
+                }
+                return arrow_keys.get(key, None)
+            else:
+                return key.decode('utf-8', errors='ignore').upper()
+        return None
+    
+    def get_key_unix(self):
+        """Get key on Unix-like systems"""
+        if sys.stdin in select.select([sys.stdin], [], [], 0):
+            key = sys.stdin.read(1)
+            if key == '\x1b':  # Escape sequence
+                if sys.stdin in select.select([sys.stdin], [], [], 0.1):
+                    seq = sys.stdin.read(2)
+                    if seq == '[A':
+                        return 'UP'
+                    elif seq == '[B':
+                        return 'DOWN'
+                    elif seq == '[D':
+                        return 'LEFT'
+                    elif seq == '[C':
+                        return 'RIGHT'
+                return 'ESC'
+            else:
+                return key.upper()
+        return None
+    
     def get_key(self):
         """Get a single keypress"""
         if self.is_windows:
-            if msvcrt.kbhit():
-                key = msvcrt.getch()
-                if key == b'\xe0':  # Arrow key prefix on Windows
-                    key = msvcrt.getch()
-                    if key == b'H':  # Up arrow
-                        return 'UP'
-                    elif key == b'P':  # Down arrow
-                        return 'DOWN'
-                    elif key == b'K':  # Left arrow
-                        return 'LEFT'
-                    elif key == b'M':  # Right arrow
-                        return 'RIGHT'
-                else:
-                    return key.decode('utf-8', errors='ignore').upper()
+            return self.get_key_windows()
         else:
-            # Unix-like systems
-            if sys.stdin in select.select([sys.stdin], [], [], 0):
-                key = sys.stdin.read(1)
-                if key == '\x1b':  # Escape sequence
-                    key += sys.stdin.read(2)
-                    if key == '\x1b[A':  # Up arrow
-                        return 'UP'
-                    elif key == '\x1b[B':  # Down arrow
-                        return 'DOWN'
-                    elif key == '\x1b[D':  # Left arrow
-                        return 'LEFT'
-                    elif key == '\x1b[C':  # Right arrow
-                        return 'RIGHT'
-                else:
-                    return key.upper()
-        return None
+            return self.get_key_unix()
     
     def cleanup(self):
         """Restore terminal settings"""
@@ -260,68 +351,99 @@ class InputHandler:
             termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self.old_settings)
 
 def play_human_mode(game, input_handler):
-    """Human player game loop"""
-    while not game.game_over:
-        # Draw the game
-        game.draw_game()
-        print('Controls: WASD or Arrow Keys to move, Q to quit')
+    """Human player game loop with enhanced timing"""
+    last_update = time.time()
+    
+    while game.state not in [GameState.GAME_OVER, GameState.QUIT]:
+        current_time = time.time()
         
-        # Get input
+        # Handle input
         key = input_handler.get_key()
-        
-        # Process input
         if key:
             if key.upper() == 'Q':
+                game.state = GameState.QUIT
                 break
-            elif key in ['W', 'UP']:
-                game.change_direction((0, -1))
-            elif key in ['S', 'DOWN']:
-                game.change_direction((0, 1))
-            elif key in ['A', 'LEFT']:
-                game.change_direction((-1, 0))
-            elif key in ['D', 'RIGHT']:
-                game.change_direction((1, 0))
+            elif key.upper() == 'P' and game.state in [GameState.PLAYING, GameState.PAUSED]:
+                game.state = GameState.PAUSED if game.state == GameState.PLAYING else GameState.PLAYING
+            elif key.upper() == 'R' and game.state == GameState.GAME_OVER:
+                game.reset_game()
+            elif game.state == GameState.PLAYING:
+                # Direction controls
+                direction_map = {
+                    'W': Direction.UP, 'UP': Direction.UP,
+                    'S': Direction.DOWN, 'DOWN': Direction.DOWN,
+                    'A': Direction.LEFT, 'LEFT': Direction.LEFT,
+                    'D': Direction.RIGHT, 'RIGHT': Direction.RIGHT
+                }
+                if key in direction_map:
+                    game.change_direction(direction_map[key])
         
-        # Move snake
-        game.move_snake()
+        # Update game at consistent intervals
+        if current_time - last_update >= game.get_speed():
+            game.update()
+            last_update = current_time
         
-        # Game speed (adjust as needed)
-        time.sleep(0.15)
+        # Render
+        game.draw()
+        
+        # Small sleep to prevent excessive CPU usage
+        time.sleep(0.01)
 
 def play_ai_mode(game, input_handler):
-    """AI player game loop"""
+    """AI player game loop with enhanced timing"""
     ai_player = AIPlayer(game)
+    last_update = time.time()
     
-    while not game.game_over:
-        # Draw the game
-        game.draw_game()
-        print('🤖 AI Mode - Press Q to quit, any other key to pause')
+    while game.state not in [GameState.GAME_OVER, GameState.QUIT]:
+        current_time = time.time()
         
-        # Check for user input (quit or pause)
+        # Handle user input (quit or pause)
         key = input_handler.get_key()
-        if key and key.upper() == 'Q':
-            break
-        elif key:
-            print('Paused. Press any key to continue...')
-            input_handler.get_key()
+        if key:
+            if key.upper() == 'Q':
+                game.state = GameState.QUIT
+                break
+            elif key.upper() == 'P' and game.state in [GameState.PLAYING, GameState.PAUSED]:
+                game.state = GameState.PAUSED if game.state == GameState.PLAYING else GameState.PLAYING
+            elif key.upper() == 'R' and game.state == GameState.GAME_OVER:
+                game.reset_game()
         
-        # AI makes decision
-        ai_direction = ai_player.get_next_direction()
-        if ai_direction:
-            game.change_direction(ai_direction)
+        # AI makes decision when playing
+        if game.state == GameState.PLAYING:
+            ai_direction = ai_player.get_next_direction()
+            if ai_direction:
+                # Convert tuple direction to Direction enum
+                direction_map = {
+                    (0, -1): Direction.UP,
+                    (0, 1): Direction.DOWN,
+                    (-1, 0): Direction.LEFT,
+                    (1, 0): Direction.RIGHT
+                }
+                if ai_direction in direction_map:
+                    game.change_direction(direction_map[ai_direction])
         
-        # Move snake
-        game.move_snake()
+        # Update game at consistent intervals (slightly faster for AI demo)
+        ai_speed = max(0.05, game.get_speed() * 0.8)  # 20% faster than human speed
+        if current_time - last_update >= ai_speed:
+            game.update()
+            last_update = current_time
         
-        # AI game speed (slightly faster for demo)
-        time.sleep(0.08)
+        # Render with AI-specific info
+        game.draw()
+        if game.state == GameState.PLAYING:
+            print('🤖 AI Mode - Press P to pause, Q to quit')
+        elif game.state == GameState.PAUSED:
+            print('🤖 AI PAUSED - Press P to resume, Q to quit')
+        
+        # Small sleep to prevent excessive CPU usage
+        time.sleep(0.01)
 
 def main():
-    """Main game entry point with mode selection"""
-    print("🐍 Welcome to Snake Game! 🐍")
+    """Main game entry point with mode selection and enhanced features"""
+    print("🐍 Enhanced Snake Game with AI! 🐍")
     print("Choose your mode:")
-    print("1. Human Player (WASD/Arrow Keys)")
-    print("2. AI Player (Watch the AI play)")
+    print("1. Human Player (Enhanced controls with pause/resume)")
+    print("2. AI Player (Watch the AI play with A* pathfinding)")
     print("3. Quit")
     
     while True:
@@ -329,39 +451,33 @@ def main():
         
         if choice == '1':
             # Human mode
+            print("\n🎮 Starting Human Mode...")
+            time.sleep(0.5)
+            
             game = SnakeGame()
             input_handler = InputHandler()
             
             try:
                 play_human_mode(game, input_handler)
                 
-                # Final screen if game over
-                if game.game_over:
-                    game.draw_game()
-                    print('Press any key to return to menu...')
-                    input_handler.get_key()
-                    
             except KeyboardInterrupt:
                 print("\n\nGame interrupted by user.")
             finally:
                 input_handler.cleanup()
-                print(f"\nFinal Score: {game.score}")
+                print(f"\n🎮 Final Score: {game.score}")
                 print("Returning to menu...\n")
                 
         elif choice == '2':
             # AI mode
+            print("\n🤖 Starting AI Mode...")
+            time.sleep(0.5)
+            
             game = SnakeGame()
             input_handler = InputHandler()
             
             try:
                 play_ai_mode(game, input_handler)
                 
-                # Final screen if game over
-                if game.game_over:
-                    game.draw_game()
-                    print('AI finished! Press any key to return to menu...')
-                    input_handler.get_key()
-                    
             except KeyboardInterrupt:
                 print("\n\nGame interrupted by user.")
             finally:
@@ -370,7 +486,7 @@ def main():
                 print("Returning to menu...\n")
                 
         elif choice == '3':
-            print("Thanks for playing Snake Game! 🐍")
+            print("Thanks for playing Enhanced Snake Game with AI! 🐍🤖")
             break
         else:
             print("Invalid choice. Please enter 1, 2, or 3.")
